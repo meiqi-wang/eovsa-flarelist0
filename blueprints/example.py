@@ -53,7 +53,7 @@ def get_eo_flare_list_MySQL(start_utc, end_utc):
     query_with_flags = """
         SELECT Flare_ID, Flare_class, EO_tstart, EO_tpeak, EO_tend,
                depec_imgfile_TP, depec_datafile_TP, depec_imgfile_XP, depec_datafile_XP,
-               Fpk_XP_3GHz, Fpk_XP_11GHz, has_ql_movie, has_fits
+               Fpk_XP_3GHz, Fpk_XP_11GHz, Fpk_over_10sfu, has_ql_movie, has_fits
         FROM EOVSA_flare_list_wiki_tb
         WHERE EO_tstart <= %s AND %s <= EO_tend
         ORDER BY EO_tstart
@@ -88,8 +88,9 @@ def get_eo_flare_list_MySQL(start_utc, end_utc):
         for i, row in enumerate(rows):
             (
                 flare_id_val, goes_class, eo_tstart, eo_tpeak, eo_tend,
-                img_tp, data_tp, img_xp, data_xp, fpk_3, fpk_11, *link_flags
+                img_tp, data_tp, img_xp, data_xp, fpk_3, fpk_11, fpk_over_10sfu, *link_flags
             ) = row
+
             flare_id_str = str(flare_id_val)
             has_ql_movie = int(link_flags[0]) if has_link_flags and link_flags else 0
             has_fits = int(link_flags[1]) if has_link_flags and len(link_flags) > 1 else 0
@@ -141,7 +142,8 @@ def get_eo_flare_list_MySQL(start_utc, end_utc):
                 'link_dspec_XP': link_dspec_XP,
                 'link_dspec_data_XP': link_dspec_data_XP,
                 'link_movie': link_movie,
-                'link_fits': link_fits
+                'link_fits': link_fits,
+                'Fpk_over_10sfu': fpk_over_10sfu
             })
     return result
 
