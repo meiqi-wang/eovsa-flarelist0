@@ -37,7 +37,8 @@ document.addEventListener('DOMContentLoaded', function() {
                 row += '<td>' + (item[key] || '') + '</td>';
             }); // Handle null values
             // Add a cell for the flare_id with an onclick event
-            row += '<td><a href="#" class="flare-id-link" data-flare-id="' + item['flare_id'] + '">' + item['flare_id'] + '</a></td>';
+            let flareStyle = (item['Fpk_over_10sfu'] === 'orange') ? ' style="color:orange;"' : '';
+            row += '<td><a href="#" class="flare-id-link" data-flare-id="' + item['flare_id'] + '"' + flareStyle + '>' + item['flare_id'] + '</a></td>';
 
             ['start', 'peak', 'end', 'GOES_class', 'Fpk_XP_3GHz', 'Fpk_XP_11GHz', 
                 'link_dspec_TP', 'link_dspec_data_TP', 'link_dspec_XP', 'link_dspec_data_XP', 'link_movie', 'link_fits'].forEach((key) => {
