@@ -3,10 +3,12 @@ import pandas as pd
 from flask import Flask, Blueprint, render_template, request, jsonify, url_for
 import plotly.express as px
 import plotly.graph_objects as go
+from bs4 import BeautifulSoup
 import socket
 import json
 import plotly
 import os
+import re
 import mysql.connector
 from astropy.time import Time
 import requests
@@ -36,6 +38,170 @@ def _jd_to_isot_seconds(jd_value):
     return Time(float(jd_value), format='jd').isot.split('.')[0]
 
 
+_WIKI_BASE = "https://ovsa.njit.edu/wiki/index.php"
+_wiki_year_cache = {}
+_url_exists_cache = {}
+_URL_PATTERN = re.compile(r'(https?://[^\s<>"\']+)')
+
+
+def _build_wiki_year_url(year):
+    return f"{_WIKI_BASE}/{year}"
+
+
+def _check_url_exists_cached(url):
+    if not url:
+        return False
+    if url in _url_exists_cache:
+        return _url_exists_cache[url]
+    ok = check_url_exists(url)
+    _url_exists_cache[url] = ok
+    return ok
+
+
+def _normalize_wiki_href(href):
+    href = (href or "").strip()
+    if not href:
+        return ""
+    if href.startswith("//"):
+        return f"https:{href}"
+    if href.startswith("/"):
+        return f"https://ovsa.njit.edu{href}"
+    if re.match(r'^[a-zA-Z][a-zA-Z0-9+.-]*://', href):
+        return href
+    return f"{_WIKI_BASE}/{href.lstrip('/')}"
+
+
+def _format_comment_html(comment_cell):
+    # Preserve rendered wiki links in comment cells and make plain URLs clickable.
+    inner_html = ''.join(str(node) for node in comment_cell.contents).strip()
+    if not inner_html:
+        return ""
+
+    soup = BeautifulSoup(inner_html, "html.parser")
+
+    for anchor in soup.find_all("a"):
+        href = _normalize_wiki_href(anchor.get("href"))
+        if not href:
+            continue
+        anchor["href"] = href
+        anchor["target"] = "_blank"
+        anchor["rel"] = "noopener noreferrer"
+
+    for text_node in list(soup.find_all(string=True)):
+        if text_node.parent and text_node.parent.name == "a":
+            continue
+        text_val = str(text_node)
+        if not _URL_PATTERN.search(text_val):
+            continue
+
+        replaced_html = _URL_PATTERN.sub(
+            r'<a href="\1" target="_blank" rel="noopener noreferrer">\1</a>',
+            text_val
+        )
+        fragment = BeautifulSoup(replaced_html, "html.parser")
+        for new_node in reversed(fragment.contents):
+            text_node.insert_after(new_node)
+        text_node.extract()
+
+    return str(soup).strip()
+
+
+def _extract_flare_location_url(row, flare_id_key):
+    flare_id_key = (flare_id_key or "").strip()
+    flare_id_key_lower = flare_id_key.lower()
+
+    # Match only wiki file links containing both flare id and "FL" token.
+    for anchor in row.find_all("a"):
+        href = _normalize_wiki_href(anchor.get("href"))
+        if not href:
+            continue
+        href_lower = href.lower()
+        if (
+            "index.php/file:" in href_lower
+            and flare_id_key_lower
+            and flare_id_key_lower in href_lower
+            and "fl" in href_lower
+        ):
+            return href
+
+    # No valid flare-location link found on this row.
+    return ""
+
+
+def _load_wiki_year_cache(year):
+    if year in _wiki_year_cache:
+        return
+
+    page_url = _build_wiki_year_url(year)
+    cache_item = {
+        "comments": {},
+        "flare_locations": {},
+    }
+
+    try:
+        response = requests.get(page_url, timeout=10)
+        response.raise_for_status()
+        soup = BeautifulSoup(response.text, "html.parser")
+
+        for table in soup.find_all("table", {"class": "wikitable"}):
+            for row in table.find_all("tr"):
+                cells = row.find_all("td")
+                if len(cells) < 3:
+                    continue
+
+                date_text = cells[0].get_text(" ", strip=True).replace("/", "-")
+                time_text = cells[1].get_text(" ", strip=True)
+                time_text = time_text.replace("UTC", "").replace("UT", "").strip()
+
+                date_match = re.search(r'(\d{4}-\d{2}-\d{2})', date_text)
+                time_match = re.search(r'(\d{2}:\d{2})(?::(\d{2}))?', time_text)
+                if not date_match or not time_match:
+                    continue
+
+                hhmmss = f"{time_match.group(1)}:{time_match.group(2) or '00'}"
+                flare_key = (
+                    date_match.group(1).replace("-", "")
+                    + hhmmss.replace(":", "")
+                )
+
+                cache_item["comments"][flare_key] = _format_comment_html(cells[-1]) if len(cells) > 3 else ""
+                cache_item["flare_locations"][flare_key] = _extract_flare_location_url(row, flare_key)
+    except requests.RequestException:
+        pass
+
+    _wiki_year_cache[year] = cache_item
+
+
+def _fetch_wiki_comment(flare_id_str):
+    year = flare_id_str[:4]
+    _load_wiki_year_cache(year)
+
+    flare_key_exact = flare_id_str[:14]
+    flare_key_minute = flare_id_str[:12] + "00"
+    comment_map = _wiki_year_cache.get(year, {}).get("comments", {})
+
+    return (
+        comment_map.get(flare_key_exact)
+        or comment_map.get(flare_key_minute)
+        or ""
+    )
+
+
+def _fetch_wiki_flare_location(flare_id_str):
+    year = flare_id_str[:4]
+    _load_wiki_year_cache(year)
+
+    flare_key_exact = flare_id_str[:14]
+    flare_key_minute = flare_id_str[:12] + "00"
+    flare_location_map = _wiki_year_cache.get(year, {}).get("flare_locations", {})
+
+    return (
+        flare_location_map.get(flare_key_exact)
+        or flare_location_map.get(flare_key_minute)
+        or ""
+    )
+
+
 def get_eo_flare_list_MySQL(start_utc, end_utc):
     """
     info from MySQL
@@ -53,7 +219,7 @@ def get_eo_flare_list_MySQL(start_utc, end_utc):
     query_with_flags = """
         SELECT Flare_ID, Flare_class, EO_tstart, EO_tpeak, EO_tend,
                depec_imgfile_TP, depec_datafile_TP, depec_imgfile_XP, depec_datafile_XP,
-               Fpk_XP_3GHz, Fpk_XP_11GHz, Fpk_over_10sfu, has_ql_movie, has_fits
+               Fpk_XP, freq_at_Fpk_XP, Fpk_over_10sfu, has_ql_movie, has_fits
         FROM EOVSA_flare_list_wiki_tb
         WHERE EO_tstart <= %s AND %s <= EO_tend
         ORDER BY EO_tstart
@@ -61,7 +227,7 @@ def get_eo_flare_list_MySQL(start_utc, end_utc):
     query_without_flags = """
         SELECT Flare_ID, Flare_class, EO_tstart, EO_tpeak, EO_tend,
                depec_imgfile_TP, depec_datafile_TP, depec_imgfile_XP, depec_datafile_XP,
-               Fpk_XP_3GHz, Fpk_XP_11GHz
+               Fpk_XP, freq_at_Fpk_XP
         FROM EOVSA_flare_list_wiki_tb
         WHERE EO_tstart <= %s AND %s <= EO_tend
         ORDER BY EO_tstart
@@ -88,7 +254,7 @@ def get_eo_flare_list_MySQL(start_utc, end_utc):
         for i, row in enumerate(rows):
             (
                 flare_id_val, goes_class, eo_tstart, eo_tpeak, eo_tend,
-                img_tp, data_tp, img_xp, data_xp, fpk_3, fpk_11, fpk_over_10sfu, *link_flags
+                img_tp, data_tp, img_xp, data_xp, fpk_tot, pk_freq, fpk_over_10sfu, *link_flags
             ) = row
 
             flare_id_str = str(flare_id_val)
@@ -119,6 +285,12 @@ def get_eo_flare_list_MySQL(start_utc, end_utc):
 
             link_movie = None
             link_fits = None
+            flare_location_url = _fetch_wiki_flare_location(flare_id_str)
+            link_flare_location = (
+                _build_icon_link(flare_location_url, ql_symbol_url, "Flare_Location")
+                if _check_url_exists_cached(flare_location_url)
+                else None
+            )
             if has_link_flags:
                 if has_ql_movie:
                     link_movie = _build_icon_link(link_movie_str, ql_symbol_url, "QL_Movie")
@@ -128,6 +300,17 @@ def get_eo_flare_list_MySQL(start_utc, end_utc):
                 link_movie = _build_icon_link(link_movie_str, ql_symbol_url, "QL_Movie")
                 link_fits = _build_icon_link(link_fits_str, dl_symbol_url, "FITS")
 
+            raw_fpk_color = str(fpk_over_10sfu).strip().lower() if fpk_over_10sfu is not None else ''
+            if raw_fpk_color in ('blue', 'yellow'):
+                normalized_fpk_color = raw_fpk_color
+            elif raw_fpk_color in ('orange', 'true', '1'):
+                normalized_fpk_color = 'blue'
+            else:
+                try:
+                    normalized_fpk_color = 'blue' if float(fpk_tot) > 10.0 else 'yellow'
+                except (TypeError, ValueError):
+                    normalized_fpk_color = 'yellow'
+
             result.append({
                 '_id': i + 1,
                 'flare_id': int(flare_id_val),
@@ -135,15 +318,17 @@ def get_eo_flare_list_MySQL(start_utc, end_utc):
                 'peak': _jd_to_isot_seconds(eo_tpeak),
                 'end': _jd_to_isot_seconds(eo_tend),
                 'GOES_class': goes_class,
-                'Fpk_XP_3GHz': f'<div style="text-align: center;">{fpk_3}</div>',
-                'Fpk_XP_11GHz': f'<div style="text-align: center;">{fpk_11}</div>',
+                'Fpk_XP': f'<div style="text-align: center;">{fpk_tot}</div>',
+                'Pk_freq_GHz': f'<div style="text-align: center;">{pk_freq}</div>',
+                'comments': f'<div style="color: black;">{_fetch_wiki_comment(flare_id_str)}</div>',
                 'link_dspec_TP': link_dspec_TP,
                 'link_dspec_data_TP': link_dspec_data_TP,
                 'link_dspec_XP': link_dspec_XP,
                 'link_dspec_data_XP': link_dspec_data_XP,
+                'link_flare_location': link_flare_location,
                 'link_movie': link_movie,
                 'link_fits': link_fits,
-                'Fpk_over_10sfu': fpk_over_10sfu
+                'Fpk_over_10sfu': normalized_fpk_color
             })
     return result
 
