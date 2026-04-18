@@ -37,11 +37,19 @@ document.addEventListener('DOMContentLoaded', function() {
                 row += '<td>' + (item[key] || '') + '</td>';
             }); // Handle null values
             // Add a cell for the flare_id with an onclick event
-            let flareStyle = (item['Fpk_over_10sfu'] === 'orange') ? ' style="color:orange;"' : '';
-            row += '<td><a href="#" class="flare-id-link" data-flare-id="' + item['flare_id'] + '"' + flareStyle + '>' + item['flare_id'] + '</a></td>';
+            const fpkColor = String(item['Fpk_over_10sfu'] ?? '').trim().toLowerCase();
+            const fpkText = String(item['Fpk_XP'] ?? '').replace(/<[^>]*>/g, '').trim();
+            const fpkValue = Number.parseFloat(fpkText);
+            const hasNumericFpk = Number.isFinite(fpkValue);
 
-            ['start', 'peak', 'end', 'GOES_class', 'Fpk_XP_3GHz', 'Fpk_XP_11GHz', 
-                'link_dspec_TP', 'link_dspec_data_TP', 'link_dspec_XP', 'link_dspec_data_XP', 'link_movie', 'link_fits'].forEach((key) => {
+            const isBlue = hasNumericFpk
+                ? (fpkValue > 10)
+                : (fpkColor === 'blue' || fpkColor === 'true' || fpkColor === '1' || fpkColor === 'orange');
+            const flareClass = isBlue ? 'flare-id-link blue-link' : 'flare-id-link';
+            row += '<td><a href="#" class="' + flareClass + '" data-flare-id="' + item['flare_id'] + '">' + item['flare_id'] + '</a></td>';
+
+            ['start', 'peak', 'end', 'GOES_class', 'Fpk_XP', 'Pk_freq_GHz', 
+                'link_dspec_TP', 'link_dspec_data_TP', 'link_dspec_XP', 'link_dspec_data_XP', 'link_flare_location', 'link_movie', 'link_fits', 'comments'].forEach((key) => {
                 row += '<td>' + (item[key] || '') + '</td>'; // Handle null values
             });
 
